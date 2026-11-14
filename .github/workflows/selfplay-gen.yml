@@ -1,0 +1,35 @@
+name: selfplay-gen
+on:
+  push:
+    branches: [engine-lab]
+    paths: [tools/lab/gen.json]
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+      - name: generate
+        run: |
+          cd tools/lab
+          C=gen.json
+          N=$(jq -r .shards $C); B=$(jq -r .batch $C)
+          if [ ${{ matrix.shard }} -ge $N ]; then echo skip; exit 0; fi
+          gcc -O3 -march=native $(jq -r .flags $C) -o gen/gen gen/gen.c
+          P=$(nproc); echo "cores $P"
+          for p in $(seq 0 $((P-1))); do
+            seed=$(( B*100000 + ${{ matrix.shard }}*100 + p + 1 ))
+            OPEN=gen/open.txt timeout $(jq -r .seconds $C) ./gen/gen $(jq -r .nodes $C) $seed 100000000 $(jq -r .net $C) > sp_${{ matrix.shard }}_$p.txt &
+          done
+          wait || true
+          cat sp_*.txt | gzip -6 > sp_${{ matrix.shard }}.txt.gz
+          ls -la sp_*.gz; zcat sp_${{ matrix.shard }}.txt.gz | wc -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sp-${{ matrix.shard }}
+          path: tools/lab/sp_*.txt.gz
+          retention-days: 3
