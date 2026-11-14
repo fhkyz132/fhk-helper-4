@@ -118,23 +118,51 @@ static i32 gen(i32 *out, i32 n, int capsOnly) {
 #define NNH 256
 #endif
 #define NNLV (MAXPLY + 1100)
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
+i32 nn_h(void) { return NNH; }
 i32 useNN = 0; i16 NW1[768 * NNH], NB1[NNH], NW2[2 * NNH]; i32 NB2 = 0, nnOutMul = 400, nnOutDiv = 255 * 64;
 static i16 nnAcc[NNLV][2][NNH]; static u8 nnOk[NNLV], nnNA[NNLV], nnNS[NNLV]; static i16 nnAdd[NNLV][4], nnSub[NNLV][4];
 static i32 nnRec;
 static inline i32 nnF(i32 s, i32 p) { return (((p >> 3) * 6 + (p & 7) - 1) << 6) + (SQ64[s] ^ 56); }
 static inline i32 nnFlip(i32 f) { i32 ct = f >> 6, sq = f & 63, col = ct / 6, t = ct % 6; return (((1 - col) * 6 + t) << 6) + (sq ^ 56); }
+#ifdef __wasm_simd128__
+static inline void vadd2(i16 *a, i16 *b, const i16 *w, const i16 *v) { for (int j = 0; j < NNH; j += 8) { wasm_v128_store(a + j, wasm_i16x8_add(wasm_v128_load(a + j), wasm_v128_load(w + j))); wasm_v128_store(b + j, wasm_i16x8_add(wasm_v128_load(b + j), wasm_v128_load(v + j))); } }
+static inline void vsub2(i16 *a, i16 *b, const i16 *w, const i16 *v) { for (int j = 0; j < NNH; j += 8) { wasm_v128_store(a + j, wasm_i16x8_sub(wasm_v128_load(a + j), wasm_v128_load(w + j))); wasm_v128_store(b + j, wasm_i16x8_sub(wasm_v128_load(b + j), wasm_v128_load(v + j))); } }
+#else
+static inline void vadd2(i16 *a, i16 *b, const i16 *w, const i16 *v) { for (int j = 0; j < NNH; j++) { a[j] += w[j]; b[j] += v[j]; } }
+static inline void vsub2(i16 *a, i16 *b, const i16 *w, const i16 *v) { for (int j = 0; j < NNH; j++) { a[j] -= w[j]; b[j] -= v[j]; } }
+#endif
 static void nnFull(i32 L) { i16 *a = nnAcc[L][0], *b = nnAcc[L][1]; for (int j = 0; j < NNH; j++) { a[j] = NB1[j]; b[j] = NB1[j]; }
-  FOR_OCC(occ[0] | occ[1], s) { i32 f = nnF(s, B[s]), g = nnFlip(f); const i16 *w = &NW1[f * NNH], *v = &NW1[g * NNH]; for (int j = 0; j < NNH; j++) { a[j] += w[j]; b[j] += v[j]; } } nnOk[L] = 1; }
+  FOR_OCC(occ[0] | occ[1], s) { i32 f = nnF(s, B[s]), g = nnFlip(f); vadd2(a, b, &NW1[f * NNH], &NW1[g * NNH]); } nnOk[L] = 1; }
 static void nnUpdate(i32 L) { // make level L valid from earlier levels
   i32 k = L; while (!nnOk[k]) k--;
   for (i32 l = k + 1; l <= L; l++) { i16 *pa = nnAcc[l - 1][0], *pb = nnAcc[l - 1][1], *a = nnAcc[l][0], *b = nnAcc[l][1];
+#ifdef __wasm_simd128__
+    { const i16 *aw[4], *av[4], *sw[4], *sv[4]; i32 na = nnNA[l], ns = nnNS[l];
+      for (int i = 0; i < na; i++) { i32 f = nnAdd[l][i]; aw[i] = &NW1[f * NNH]; av[i] = &NW1[nnFlip(f) * NNH]; }
+      for (int i = 0; i < ns; i++) { i32 f = nnSub[l][i]; sw[i] = &NW1[f * NNH]; sv[i] = &NW1[nnFlip(f) * NNH]; }
+      for (int j = 0; j < NNH; j += 8) { v128_t x = wasm_v128_load(pa + j), y = wasm_v128_load(pb + j);
+        for (int i = 0; i < na; i++) { x = wasm_i16x8_add(x, wasm_v128_load(aw[i] + j)); y = wasm_i16x8_add(y, wasm_v128_load(av[i] + j)); }
+        for (int i = 0; i < ns; i++) { x = wasm_i16x8_sub(x, wasm_v128_load(sw[i] + j)); y = wasm_i16x8_sub(y, wasm_v128_load(sv[i] + j)); }
+        wasm_v128_store(a + j, x); wasm_v128_store(b + j, y); } }
+#else
     for (int j = 0; j < NNH; j++) { a[j] = pa[j]; b[j] = pb[j]; }
-    for (int i = 0; i < nnNA[l]; i++) { i32 f = nnAdd[l][i], g = nnFlip(f); const i16 *w = &NW1[f * NNH], *v = &NW1[g * NNH]; for (int j = 0; j < NNH; j++) { a[j] += w[j]; b[j] += v[j]; } }
-    for (int i = 0; i < nnNS[l]; i++) { i32 f = nnSub[l][i], g = nnFlip(f); const i16 *w = &NW1[f * NNH], *v = &NW1[g * NNH]; for (int j = 0; j < NNH; j++) { a[j] -= w[j]; b[j] -= v[j]; } }
+    for (int i = 0; i < nnNA[l]; i++) { i32 f = nnAdd[l][i], g = nnFlip(f); vadd2(a, b, &NW1[f * NNH], &NW1[g * NNH]); }
+    for (int i = 0; i < nnNS[l]; i++) { i32 f = nnSub[l][i], g = nnFlip(f); vsub2(a, b, &NW1[f * NNH], &NW1[g * NNH]); }
+#endif
     nnOk[l] = 1; } }
 static i32 nnEval(void) { i32 L = sp / 10; if (!nnOk[L]) nnUpdate(L);
   const i16 *u = nnAcc[L][side >> 3], *t = nnAcc[L][(side >> 3) ^ 1]; i32 sum = 0;
+#ifdef __wasm_simd128__
+  { v128_t z = wasm_i16x8_splat(0), c = wasm_i16x8_splat(255), acc = wasm_i32x4_splat(0);
+    for (int j = 0; j < NNH; j += 8) { v128_t x = wasm_i16x8_min(wasm_i16x8_max(wasm_v128_load(u + j), z), c), y = wasm_i16x8_min(wasm_i16x8_max(wasm_v128_load(t + j), z), c);
+      acc = wasm_i32x4_add(acc, wasm_i32x4_add(wasm_i32x4_dot_i16x8(x, wasm_v128_load(NW2 + j)), wasm_i32x4_dot_i16x8(y, wasm_v128_load(NW2 + NNH + j)))); }
+    sum = wasm_i32x4_extract_lane(acc, 0) + wasm_i32x4_extract_lane(acc, 1) + wasm_i32x4_extract_lane(acc, 2) + wasm_i32x4_extract_lane(acc, 3); }
+#else
   for (int j = 0; j < NNH; j++) { i32 x = u[j], y = t[j]; x = x < 0 ? 0 : x > 255 ? 255 : x; y = y < 0 ? 0 : y > 255 ? 255 : y; sum += x * NW2[j] + y * NW2[NNH + j]; }
+#endif
   return (i32)(((long long)sum + NB2) * 400 / (255 * 1024)); }
 static void put(i32 s, i32 p) { if (nnRec) { i32 L = sp / 10; nnAdd[L][nnNA[L]++] = nnF(s, p); } B[s] = p; OSET(s, p); hl ^= ZL[p][s]; hh ^= ZH[p][s]; mg += PST_MG[p][s]; eg += PST_EG[p][s]; }
 static i32 del(i32 s) { i32 p = B[s]; if (nnRec) { i32 L = sp / 10; nnSub[L][nnNS[L]++] = nnF(s, p); } B[s] = 0; OCLR(s, p); hl ^= ZL[p][s]; hh ^= ZH[p][s]; mg -= PST_MG[p][s]; eg -= PST_EG[p][s]; return p; }
@@ -259,7 +287,11 @@ static i32 evaluate0(void) {
 static i32 ttKey[TTS], ttMove[TTS]; static i16 ttScore[TTS]; static i8 ttDepth[TTS], ttFlag[TTS]; static i32 ttMask = TTS - 1;
 static i32 moveBuf[MAXPLY * 256], scoreBuf[MAXPLY * 256], quietBuf[MAXPLY * 256], killers[MAXPLY * 2], history[16 * 120], pvLen[MAXPLY];
 i32 pvTable[MAXPLY * MAXPLY]; static i8 lmrT[64][64];
-static i32 nodes, stop, nodeLimit; static double deadline;
+i32 r_move, r_score, r_depth, r_nodes, r_pvlen; i32 r_pv[MAXPLY];
+#ifndef SOFTT
+#define SOFTT 0.55
+#endif
+static i32 nodes, stop, nodeLimit, rootPartial; static double deadline;
 i32 rootFilter[256]; i32 nRootFilter = 0;
 void set_tt_bits(i32 bits) { ttMask = (1 << (bits > TTB ? TTB : bits)) - 1; }
 void lmr_init(void) { for (int d = 0; d < 64; d++) for (int m = 0; m < 64; m++) { double v = (d && m) ? 0.75 + logd(d) * logd(m) / 2.25 : 0; i32 iv = (i32)v; if (v < 0 && iv != v) iv--; lmrT[d][m] = (d && m) ? iv : 0; } }
@@ -274,13 +306,23 @@ static void ttStore(i32 depth, i32 flag, i32 score, i32 move, i32 ply) {
   ttKey[i] = hh; ttMove[i] = move ? move : (ttKey[i] == hh ? ttMove[i] : 0); ttScore[i] = (i16)score; ttDepth[i] = (i8)depth; ttFlag[i] = (i8)flag;
 }
 static void checkTime(void) { if ((nodes & 2047) == 0) { if (host_now() > deadline || (nodeLimit && nodes > nodeLimit)) stop = 1; } }
+#ifdef CMOVE
+static i32 counterM[16 * 120];
+static inline i32 cmIdx(void) { if (sp < 10) return -1; i32 pm = stk[sp - 10]; if (!pm) return -1; return B[mTo(pm)] * 120 + mTo(pm); }
+#endif
 static void scoreMoves(i32 base, i32 n, i32 ttM, i32 ply) {
   i32 k1 = killers[ply * 2], k2 = killers[ply * 2 + 1];
+#ifdef CMOVE
+  i32 ci = cmIdx(), cmv = ci >= 0 ? counterM[ci] : 0;
+#endif
   for (i32 i = base; i < base + n; i++) { i32 m = moveBuf[i];
     if (m == ttM) scoreBuf[i] = 2000000;
     else if (mFlag(m) & F_CAP) { i32 victim = (mFlag(m) & F_EP) ? PAWN : (B[mTo(m)] & 7), att = B[mFrom(m)] & 7; i32 s = see(m); scoreBuf[i] = (s >= 0 ? 1000000 : 100000) + victim * 100 - att; }
     else if (mPromo(m)) scoreBuf[i] = mPromo(m) == QUEEN ? 950000 : -100000;
     else if (m == k1) scoreBuf[i] = 900000; else if (m == k2) scoreBuf[i] = 899000;
+#ifdef CMOVE
+    else if (m == cmv) scoreBuf[i] = 850000;
+#endif
     else scoreBuf[i] = history[B[mFrom(m)] * 120 + mTo(m)]; }
 }
 static i32 pick(i32 i, i32 end) { i32 best = i; for (i32 j = i + 1; j < end; j++) if (scoreBuf[j] > scoreBuf[best]) best = j;
@@ -307,7 +349,9 @@ static i32 qsearch(i32 alpha, i32 beta, i32 ply) {
     if (s > best) { best = s; if (s > alpha) { alpha = s; if (s >= beta) return s; } } }
   return best;
 }
+static i32 excl[MAXPLY + 2]; static i32 evs[MAXPLY + 2];
 static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
+  i32 ex = excl[ply];
   int pvNode = beta - alpha > 1; pvLen[ply] = 0;
   int inChk = inCheck(); if (inChk) depth++;
   if (depth <= 0) return qsearch(alpha, beta, ply);
@@ -315,16 +359,25 @@ static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
   if (ply > 0) { if (half >= 100 || isRepetition() || insufficient()) return 0; alpha = imax(alpha, -MATE + ply); beta = imin(beta, MATE - ply - 1); if (alpha >= beta) return alpha; }
   if (ply >= MAXPLY - 1) return evaluate();
   i32 ttM = 0; i32 ti = ttProbe();
-  if (ti >= 0) { ttM = ttMove[ti]; if (!pvNode && ply > 0 && ttDepth[ti] >= depth) { i32 s = ttScore[ti]; if (s > MATE_BOUND) s -= ply; else if (s < -MATE_BOUND) s += ply; i32 f = ttFlag[ti];
+  if (ti >= 0) { ttM = ttMove[ti]; if (!ex && !pvNode && ply > 0 && ttDepth[ti] >= depth) { i32 s = ttScore[ti]; if (s > MATE_BOUND) s -= ply; else if (s < -MATE_BOUND) s += ply; i32 f = ttFlag[ti];
       if (f == TT_EXACT || (f == TT_LOWER && s >= beta) || (f == TT_UPPER && s <= alpha)) return s; } }
-  i32 staticEval = inChk ? -INF : evaluate();
-  if (!pvNode && !inChk && ply > 0) {
+  i32 staticEval = inChk ? -INF : evaluate(); evs[ply] = staticEval;
+  int improving = !inChk && ply >= 2 && evs[ply - 2] != -INF && staticEval > evs[ply - 2];
+  if (!pvNode && !inChk && ply > 0 && !ex) {
+    #ifdef IMPR1
+    if (depth <= 6 && staticEval - 85 * (depth - improving) >= beta && iabs(beta) < MATE_BOUND) return staticEval - 85 * (depth - improving);
+#endif
     if (depth <= 6 && staticEval - 85 * depth >= beta && iabs(beta) < MATE_BOUND) return staticEval - 85 * depth;
     if (allowNull && depth >= 3 && staticEval >= beta && nonPawnMat(side)) {
       i32 R = 3 + depth / 4 + imin(3, (staticEval - beta) / 200);
       makeNull(); i32 s = -search(depth - R, -beta, -beta + 1, ply + 1, 0); unmakeNull();
       if (stop) return 0; if (s >= beta) return s > MATE_BOUND ? beta : s; }
   }
+  int singExt = 0;
+#ifdef SE
+  if (!ex && ply > 0 && depth >= SE && ttM && ti >= 0 && (ttFlag[ti] == TT_LOWER || ttFlag[ti] == TT_EXACT) && ttDepth[ti] >= depth - 3) {
+    i32 ts = ttScore[ti]; if (iabs(ts) < MATE_BOUND) { i32 sB = ts - 2 * depth; excl[ply] = ttM; i32 ss = search((depth - 1) / 2, sB - 1, sB, ply, 0); excl[ply] = 0; if (stop) return 0; if (ss < sB) singExt = 1; } }
+#endif
   if (!ttM && depth >= 5 && pvNode) depth--;
   i32 base = ply * 256; i32 n = gen(moveBuf, base, 0) - base;
   scoreMoves(base, n, ttM, ply);
@@ -334,34 +387,55 @@ static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
   i32 qb = ply * 256, nq = 0;
   for (i32 i = base; i < base + n; i++) { i32 m = pick(i, base + n);
     if (ply == 0 && nRootFilter && !inRoot(m)) continue;
+    if (m == ex) continue;
     int isCap = (mFlag(m) & F_CAP) != 0, isQuiet = !isCap && !mPromo(m);
     if (legal > 0 && isQuiet && !inChk && best > -MATE_BOUND) { if (futile) continue; if (!pvNode && depth <= 4 && legal >= 4 + depth * depth * 2) continue; }
     if (legal > 0 && !pvNode && isCap && depth <= 4 && scoreBuf[i] < 900000 && see(m) < -80 * depth) continue;
     if (!make(m)) continue;
     legal++;
     int givesCheck = inCheck(); i32 s;
-    if (legal == 1) s = -search(depth - 1, -beta, -alpha, ply + 1, 1);
+    i32 ext = (singExt && m == ttM) ? 1 : 0;
+    if (legal == 1) s = -search(depth - 1 + ext, -beta, -alpha, ply + 1, 1);
     else { i32 R = 0;
-      if (depth >= 3 && isQuiet && !inChk && !givesCheck) { R = lmrT[imin(depth, 63)][imin(legal, 63)]; if (pvNode) R--; if (m == killers[ply * 2] || m == killers[ply * 2 + 1]) R--; R = imax(0, imin(R, depth - 2)); }
-      s = -search(depth - 1 - R, -alpha - 1, -alpha, ply + 1, 1);
-      if (s > alpha && R > 0) s = -search(depth - 1, -alpha - 1, -alpha, ply + 1, 1);
-      if (s > alpha && s < beta) s = -search(depth - 1, -beta, -alpha, ply + 1, 1); }
+      if (depth >= 3 && isQuiet && !inChk && !givesCheck) { R = lmrT[imin(depth, 63)][imin(legal, 63)]; if (pvNode) R--;
+#ifdef IMPR2
+        if (!improving) R++;
+#endif
+ if (m == killers[ply * 2] || m == killers[ply * 2 + 1]) R--;
+#ifdef HLMR
+        { i32 h = history[B[mTo(m)] * 120 + mTo(m)]; if (h < 0) R++; else if (h > HLMR) R--;
+#ifdef HNEG
+          if (h < -HNEG) R++; if (h > HNEG * 4) R--;
+#endif
+        }
+#endif
+ R = imax(0, imin(R, depth - 2)); }
+      s = -search(depth - 1 + ext - R, -alpha - 1, -alpha, ply + 1, 1);
+      if (s > alpha && R > 0) s = -search(depth - 1 + ext, -alpha - 1, -alpha, ply + 1, 1);
+      if (s > alpha && s < beta) s = -search(depth - 1 + ext, -beta, -alpha, ply + 1, 1); }
     unmake();
     if (stop) return 0;
     if (s > best) { best = s; bestMove = m;
       if (s > alpha) { alpha = s; i32 o = ply * MAXPLY, o1 = (ply + 1) * MAXPLY; pvTable[o] = m; i32 l = pvLen[ply + 1]; for (i32 j = 0; j < l; j++) pvTable[o + 1 + j] = pvTable[o1 + j]; pvLen[ply] = l + 1;
+#ifdef PARTIAL
+        if (ply == 0 && legal > 1) { rootPartial = 1; r_pvlen = pvLen[0]; for (i32 j = 0; j < r_pvlen; j++) r_pv[j] = pvTable[j]; r_move = m; r_score = s; }
+#endif
         if (s >= beta) { if (isQuiet) { if (killers[ply * 2] != m) { killers[ply * 2 + 1] = killers[ply * 2]; killers[ply * 2] = m; }
+#ifdef CMOVE
+            { i32 ci = cmIdx(); if (ci >= 0) counterM[ci] = m; }
+#endif
+
             i32 hi = B[mFrom(m)] * 120 + mTo(m); history[hi] += depth * depth; if (history[hi] > 800000) for (int z = 0; z < 16 * 120; z++) history[z] >>= 1;
             for (i32 qq = 0; qq < nq; qq++) { i32 q = quietBuf[qb + qq]; i32 qi = B[mFrom(q)] * 120 + mTo(q); history[qi] -= depth * depth; } }
           break; } } }
     if (isQuiet) quietBuf[qb + nq++] = m;
   }
-  if (legal == 0) return inChk ? -MATE + ply : 0;
-  ttStore(depth, best >= beta ? TT_LOWER : (best > origAlpha ? TT_EXACT : TT_UPPER), best, bestMove, ply);
+  if (legal == 0) return ex ? alpha : (inChk ? -MATE + ply : 0);
+  if (!ex) ttStore(depth, best >= beta ? TT_LOWER : (best > origAlpha ? TT_EXACT : TT_UPPER), best, bestMove, ply);
   return best;
 }
 // results
-i32 r_move, r_score, r_depth, r_nodes, r_pvlen; i32 r_pv[MAXPLY];
+
 static i32 legalList[256];
 i32 go(double timeMs, i32 maxDepthIn, i32 nodeLim) {
   stop = 0; nodes = 0; double t0 = host_now(); deadline = t0 + (timeMs > 0 ? timeMs : 1000); nodeLimit = nodeLim;
@@ -386,7 +460,7 @@ i32 go(double timeMs, i32 maxDepthIn, i32 nodeLim) {
     }
     if (stop) break;
     if (iabs(s) > MATE_BOUND && d > 6) break;
-    if (!maxDepthIn && host_now() - t0 > (timeMs > 0 ? timeMs : 1000) * 0.55) break;
+    if (!maxDepthIn && host_now() - t0 > (timeMs > 0 ? timeMs : 1000) * SOFTT) break;
     if (nl == 1 && d >= 4) break;
   }
   r_nodes = nodes; return r_move;

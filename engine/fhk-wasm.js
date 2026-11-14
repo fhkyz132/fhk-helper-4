@@ -12,7 +12,7 @@ var FHKW = (function () {
       for (var p = 0; p < 16; p++) for (var s = 0; s < 120; s++) { a[p * 120 + s] = MEEngine.PST_MG[p][s]; b[p * 120 + s] = MEEngine.PST_EG[p][s]; }
       X.init(); X.lmr_init(); X.set_tt_bits(20); X.tt_clear();
       var nb = load('fhk-net.bin'), hd = new Int32Array(nb, 0, 2), H = hd[0], w = new Int16Array(nb, 8);
-      if (H !== 256) throw new Error('net');
+      if (H !== (X.nn_h ? X.nn_h() : 256)) throw new Error('net');
       new Int16Array(mem, X.ptr_nw1(), 768 * H).set(w.subarray(0, 768 * H));
       new Int16Array(mem, X.ptr_nb1(), H).set(w.subarray(768 * H, 769 * H));
       new Int16Array(mem, X.ptr_nw2(), 2 * H).set(w.subarray(769 * H, 771 * H));
