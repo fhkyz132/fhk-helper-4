@@ -15,7 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with:
+          node-version: 20
       - name: play
         run: |
           cd tools/lab
@@ -28,7 +29,9 @@ jobs:
           done
           wait; cat log_*.txt
       - uses: actions/upload-artifact@v4
-        with: { name: res-${{ matrix.shard }}, path: "tools/lab/out_*" }
+        with:
+          name: res-${{ matrix.shard }}
+          path: tools/lab/out_*
   sum:
     needs: play
     if: always()
@@ -36,6 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { path: res }
+        with:
+          path: res
       - run: |
           node -e "const fs=require('fs'),p=require('path');let a=[];const walk=d=>{for(const f of fs.readdirSync(d)){const q=p.join(d,f);if(fs.statSync(q).isDirectory())walk(q);else if(/out_.*\.json$/.test(f))a.push(...JSON.parse(fs.readFileSync(q)));}};walk('res');const w=a.filter(x=>x==1).length,d=a.filter(x=>x==.5).length;console.log('RESULT',JSON.stringify(require('./tools/lab/match.json')),'games',a.length,'W',w,'D',d,'L',a.length-w-d,'score',(100*(w+d/2)/a.length).toFixed(1)+'%')" | tee -a $GITHUB_STEP_SUMMARY
