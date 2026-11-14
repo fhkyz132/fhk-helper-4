@@ -1,1 +1,1 @@
-{"name":"i1_vs_h5","type":"sp","A":"i1.wasm:nets/n9.bin","B":"h5.wasm:nets/n9.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":9}
+{"name":"i2_vs_h5","type":"sp","A":"i2.wasm:nets/n9.bin","B":"h5.wasm:nets/n9.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":9}
