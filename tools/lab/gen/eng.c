@@ -349,7 +349,9 @@ static i32 qsearch(i32 alpha, i32 beta, i32 ply) {
     if (s > best) { best = s; if (s > alpha) { alpha = s; if (s >= beta) return s; } } }
   return best;
 }
+static i32 excl[MAXPLY + 2]; static i32 evs[MAXPLY + 2];
 static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
+  i32 ex = excl[ply];
   int pvNode = beta - alpha > 1; pvLen[ply] = 0;
   int inChk = inCheck(); if (inChk) depth++;
   if (depth <= 0) return qsearch(alpha, beta, ply);
@@ -357,16 +359,25 @@ static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
   if (ply > 0) { if (half >= 100 || isRepetition() || insufficient()) return 0; alpha = imax(alpha, -MATE + ply); beta = imin(beta, MATE - ply - 1); if (alpha >= beta) return alpha; }
   if (ply >= MAXPLY - 1) return evaluate();
   i32 ttM = 0; i32 ti = ttProbe();
-  if (ti >= 0) { ttM = ttMove[ti]; if (!pvNode && ply > 0 && ttDepth[ti] >= depth) { i32 s = ttScore[ti]; if (s > MATE_BOUND) s -= ply; else if (s < -MATE_BOUND) s += ply; i32 f = ttFlag[ti];
+  if (ti >= 0) { ttM = ttMove[ti]; if (!ex && !pvNode && ply > 0 && ttDepth[ti] >= depth) { i32 s = ttScore[ti]; if (s > MATE_BOUND) s -= ply; else if (s < -MATE_BOUND) s += ply; i32 f = ttFlag[ti];
       if (f == TT_EXACT || (f == TT_LOWER && s >= beta) || (f == TT_UPPER && s <= alpha)) return s; } }
-  i32 staticEval = inChk ? -INF : evaluate();
-  if (!pvNode && !inChk && ply > 0) {
+  i32 staticEval = inChk ? -INF : evaluate(); evs[ply] = staticEval;
+  int improving = !inChk && ply >= 2 && evs[ply - 2] != -INF && staticEval > evs[ply - 2];
+  if (!pvNode && !inChk && ply > 0 && !ex) {
+    #ifdef IMPR1
+    if (depth <= 6 && staticEval - 85 * (depth - improving) >= beta && iabs(beta) < MATE_BOUND) return staticEval - 85 * (depth - improving);
+#endif
     if (depth <= 6 && staticEval - 85 * depth >= beta && iabs(beta) < MATE_BOUND) return staticEval - 85 * depth;
     if (allowNull && depth >= 3 && staticEval >= beta && nonPawnMat(side)) {
       i32 R = 3 + depth / 4 + imin(3, (staticEval - beta) / 200);
       makeNull(); i32 s = -search(depth - R, -beta, -beta + 1, ply + 1, 0); unmakeNull();
       if (stop) return 0; if (s >= beta) return s > MATE_BOUND ? beta : s; }
   }
+  int singExt = 0;
+#ifdef SE
+  if (!ex && ply > 0 && depth >= SE && ttM && ti >= 0 && (ttFlag[ti] == TT_LOWER || ttFlag[ti] == TT_EXACT) && ttDepth[ti] >= depth - 3) {
+    i32 ts = ttScore[ti]; if (iabs(ts) < MATE_BOUND) { i32 sB = ts - 2 * depth; excl[ply] = ttM; i32 ss = search((depth - 1) / 2, sB - 1, sB, ply, 0); excl[ply] = 0; if (stop) return 0; if (ss < sB) singExt = 1; } }
+#endif
   if (!ttM && depth >= 5 && pvNode) depth--;
   i32 base = ply * 256; i32 n = gen(moveBuf, base, 0) - base;
   scoreMoves(base, n, ttM, ply);
@@ -376,15 +387,21 @@ static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
   i32 qb = ply * 256, nq = 0;
   for (i32 i = base; i < base + n; i++) { i32 m = pick(i, base + n);
     if (ply == 0 && nRootFilter && !inRoot(m)) continue;
+    if (m == ex) continue;
     int isCap = (mFlag(m) & F_CAP) != 0, isQuiet = !isCap && !mPromo(m);
     if (legal > 0 && isQuiet && !inChk && best > -MATE_BOUND) { if (futile) continue; if (!pvNode && depth <= 4 && legal >= 4 + depth * depth * 2) continue; }
     if (legal > 0 && !pvNode && isCap && depth <= 4 && scoreBuf[i] < 900000 && see(m) < -80 * depth) continue;
     if (!make(m)) continue;
     legal++;
     int givesCheck = inCheck(); i32 s;
-    if (legal == 1) s = -search(depth - 1, -beta, -alpha, ply + 1, 1);
+    i32 ext = (singExt && m == ttM) ? 1 : 0;
+    if (legal == 1) s = -search(depth - 1 + ext, -beta, -alpha, ply + 1, 1);
     else { i32 R = 0;
-      if (depth >= 3 && isQuiet && !inChk && !givesCheck) { R = lmrT[imin(depth, 63)][imin(legal, 63)]; if (pvNode) R--; if (m == killers[ply * 2] || m == killers[ply * 2 + 1]) R--;
+      if (depth >= 3 && isQuiet && !inChk && !givesCheck) { R = lmrT[imin(depth, 63)][imin(legal, 63)]; if (pvNode) R--;
+#ifdef IMPR2
+        if (!improving) R++;
+#endif
+ if (m == killers[ply * 2] || m == killers[ply * 2 + 1]) R--;
 #ifdef HLMR
         { i32 h = history[B[mTo(m)] * 120 + mTo(m)]; if (h < 0) R++; else if (h > HLMR) R--;
 #ifdef HNEG
@@ -393,9 +410,9 @@ static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
         }
 #endif
  R = imax(0, imin(R, depth - 2)); }
-      s = -search(depth - 1 - R, -alpha - 1, -alpha, ply + 1, 1);
-      if (s > alpha && R > 0) s = -search(depth - 1, -alpha - 1, -alpha, ply + 1, 1);
-      if (s > alpha && s < beta) s = -search(depth - 1, -beta, -alpha, ply + 1, 1); }
+      s = -search(depth - 1 + ext - R, -alpha - 1, -alpha, ply + 1, 1);
+      if (s > alpha && R > 0) s = -search(depth - 1 + ext, -alpha - 1, -alpha, ply + 1, 1);
+      if (s > alpha && s < beta) s = -search(depth - 1 + ext, -beta, -alpha, ply + 1, 1); }
     unmake();
     if (stop) return 0;
     if (s > best) { best = s; bestMove = m;
@@ -413,8 +430,8 @@ static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
           break; } } }
     if (isQuiet) quietBuf[qb + nq++] = m;
   }
-  if (legal == 0) return inChk ? -MATE + ply : 0;
-  ttStore(depth, best >= beta ? TT_LOWER : (best > origAlpha ? TT_EXACT : TT_UPPER), best, bestMove, ply);
+  if (legal == 0) return ex ? alpha : (inChk ? -MATE + ply : 0);
+  if (!ex) ttStore(depth, best >= beta ? TT_LOWER : (best > origAlpha ? TT_EXACT : TT_UPPER), best, bestMove, ply);
   return best;
 }
 // results
