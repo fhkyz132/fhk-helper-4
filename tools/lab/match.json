@@ -1,1 +1,1 @@
-{"name":"partial_vs_base","type":"sp","A":"p256.wasm:nets/n9.bin","B":"s256.wasm:nets/n9.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":3}
+{"name":"soft07_vs_partial","type":"sp","A":"q256.wasm:nets/n9.bin","B":"p256.wasm:nets/n9.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":4}
