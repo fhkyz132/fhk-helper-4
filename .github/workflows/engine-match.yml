@@ -23,9 +23,14 @@ jobs:
           C=match.json
           N=$(jq -r .shards $C); P=$(jq -r .procs $C); K=$(jq -r .pairsPerProc $C)
           if [ ${{ matrix.shard }} -ge $N ]; then echo skip; exit 0; fi
+          T=$(jq -r '.type // "sf"' $C)
           for p in $(seq 0 $((P-1))); do
-            start=$(( (${{ matrix.shard }}*P + p) * K ))
-            WASM=$PWD/$(jq -r .wasm $C) NET=$PWD/$(jq -r .net $C) node mw2.js $PWD/s6z.js $(jq -r .level $C) $(jq -r .ms $C) $start $K out_${{ matrix.shard }}_$p.json > log_$p.txt 2>&1 &
+            if [ "$T" = sp ]; then
+              node wsp.js $(jq -r .A $C) $(jq -r .B $C) $(jq -r .pairs $C) $(jq -r .ms $C) $(( ${{ matrix.shard }}*P + p )) $((N*P)) out_${{ matrix.shard }}_$p.json > log_$p.txt 2>&1 &
+            else
+              start=$(( (${{ matrix.shard }}*P + p) * K ))
+              WASM=$PWD/$(jq -r .wasm $C) NET=$PWD/$(jq -r .net $C) node mw2.js $PWD/s6z.js $(jq -r .level $C) $(jq -r .ms $C) $start $K out_${{ matrix.shard }}_$p.json > log_$p.txt 2>&1 &
+            fi
           done
           wait; cat log_*.txt
       - uses: actions/upload-artifact@v4
@@ -42,4 +47,4 @@ jobs:
         with:
           path: res
       - run: |
-          node -e "const fs=require('fs'),p=require('path');let a=[];const walk=d=>{for(const f of fs.readdirSync(d)){const q=p.join(d,f);if(fs.statSync(q).isDirectory())walk(q);else if(/out_.*\.json$/.test(f))a.push(...JSON.parse(fs.readFileSync(q)));}};walk('res');const w=a.filter(x=>x==1).length,d=a.filter(x=>x==.5).length;console.log('RESULT',JSON.stringify(require('./tools/lab/match.json')),'games',a.length,'W',w,'D',d,'L',a.length-w-d,'score',(100*(w+d/2)/a.length).toFixed(1)+'%')" | tee -a $GITHUB_STEP_SUMMARY
+          node -e "const fs=require('fs'),p=require('path');let a=[];const walk=d=>{for(const f of fs.readdirSync(d)){const q=p.join(d,f);if(fs.statSync(q).isDirectory())walk(q);else if(/out_.*\.json$/.test(f))a.push(...JSON.parse(fs.readFileSync(q)));}};walk('res');const w=a.filter(x=>x==1).length,d=a.filter(x=>x==.5).length;console.log('RESULT',JSON.stringify(require('./tools/lab/match.json')),'games',a.length,'W',w,'D',d,'L',a.length-w-d,'score',(100*(w+d/2)/a.length).toFixed(1)+'%','elo',Math.round(-400*Math.log10(a.length/(w+d/2)-1)))" | tee -a $GITHUB_STEP_SUMMARY
