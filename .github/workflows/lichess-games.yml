@@ -1,0 +1,49 @@
+name: lichess-games
+on:
+  push:
+    branches: [engine-lab]
+    paths: [tools/lab/games.json]
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: fetch and filter analysed games
+        run: |
+          C=tools/lab/games.json; M=$(jq -r .month $C); R=$(jq -r '.bytes // ""' $C)
+          URL=https://database.lichess.org/standard/lichess_db_standard_rated_$M.pgn.zst
+          if [ -n "$R" ]; then RG="-r $R"; else RG=""; fi
+          (curl -sL --retry 5 $RG $URL | zstd -dc 2>/dev/null || true) | awk '/^\[Result /{split($0,a,"\"");r=a[2]} /^1\. /&&/%eval/{print r"\t"$0}' > games.tsv
+          wc -l games.tsv
+          split -n r/8 -d games.tsv part_
+          for f in part_*; do gzip -1 $f; done; ls -la part_*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgn-parts
+          path: part_*.gz
+          retention-days: 2
+  parse:
+    needs: fetch
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ["00","01","02","03","04","05","06","07"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: pgn-parts
+      - name: parse
+        run: |
+          pip install chess
+          C=tools/lab/games.json; K=$(jq -r .per_game $C); B=$(jq -r .batch $C)
+          zcat part_${{ matrix.part }}.gz | python3 tools/lab/pgn2pos.py $K $((B*100+10#${{ matrix.part }})) | gzip -6 > pos_${{ matrix.part }}.txt.gz
+          zcat pos_${{ matrix.part }}.txt.gz | wc -l; zcat pos_${{ matrix.part }}.txt.gz | head -3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pos-${{ matrix.part }}
+          path: pos_*.txt.gz
+          retention-days: 3
