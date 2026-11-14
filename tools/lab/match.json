@@ -1,1 +1,1 @@
-{"name":"n9_L18_2s","wasm":"s256.wasm","net":"nets/n9.bin","level":18,"ms":2000,"shards":10,"pairsPerProc":2,"procs":3}
+{"name":"n9_L18_2s","wasm":"s256.wasm","net":"nets/n9.bin","level":18,"ms":2000,"shards":10,"pairsPerProc":2,"procs":3,"run":1}
