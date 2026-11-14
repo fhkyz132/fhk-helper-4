@@ -1,1 +1,1 @@
-{"name":"x2_vs_h5","type":"sp","A":"x2.wasm:nets/n9.bin","B":"h5.wasm:nets/n9.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":10}
+{"name":"x2n9_L20_2s","wasm":"x2.wasm","net":"nets/n9.bin","level":20,"ms":2000,"shards":20,"pairsPerProc":2,"procs":3,"run":11}
