@@ -1,1 +1,1 @@
-{"name":"h_vs_partial","type":"sp","A":"h256.wasm:nets/n9.bin","B":"p256.wasm:nets/n9.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":5}
+{"name":"n11_1024_vs_n9","type":"sp","A":"p1024.wasm:nets/n11_e11.bin","B":"p256.wasm:nets/n9.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":6}
