@@ -386,7 +386,11 @@ static i32 search(i32 depth, i32 alpha, i32 beta, i32 ply, int allowNull) {
     else { i32 R = 0;
       if (depth >= 3 && isQuiet && !inChk && !givesCheck) { R = lmrT[imin(depth, 63)][imin(legal, 63)]; if (pvNode) R--; if (m == killers[ply * 2] || m == killers[ply * 2 + 1]) R--;
 #ifdef HLMR
-        { i32 h = history[B[mTo(m)] * 120 + mTo(m)]; if (h < 0) R++; else if (h > HLMR) R--; }
+        { i32 h = history[B[mTo(m)] * 120 + mTo(m)]; if (h < 0) R++; else if (h > HLMR) R--;
+#ifdef HNEG
+          if (h < -HNEG) R++; if (h > HNEG * 4) R--;
+#endif
+        }
 #endif
  R = imax(0, imin(R, depth - 2)); }
       s = -search(depth - 1 - R, -alpha - 1, -alpha, ply + 1, 1);
