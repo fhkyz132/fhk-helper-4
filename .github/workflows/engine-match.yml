@@ -1,0 +1,41 @@
+name: engine-match
+on:
+  push:
+    branches: [engine-lab]
+    paths: [tools/lab/match.json]
+  workflow_dispatch:
+jobs:
+  play:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: play
+        run: |
+          cd tools/lab
+          C=match.json
+          N=$(jq -r .shards $C); P=$(jq -r .procs $C); K=$(jq -r .pairsPerProc $C)
+          if [ ${{ matrix.shard }} -ge $N ]; then echo skip; exit 0; fi
+          for p in $(seq 0 $((P-1))); do
+            start=$(( (${{ matrix.shard }}*P + p) * K ))
+            WASM=$PWD/$(jq -r .wasm $C) NET=$PWD/$(jq -r .net $C) node mw2.js $PWD/s6z.js $(jq -r .level $C) $(jq -r .ms $C) $start $K out_${{ matrix.shard }}_$p.json > log_$p.txt 2>&1 &
+          done
+          wait; cat log_*.txt
+      - uses: actions/upload-artifact@v4
+        with: { name: res-${{ matrix.shard }}, path: "tools/lab/out_*" }
+  sum:
+    needs: play
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: res }
+      - run: |
+          node -e "const fs=require('fs'),p=require('path');let a=[];const walk=d=>{for(const f of fs.readdirSync(d)){const q=p.join(d,f);if(fs.statSync(q).isDirectory())walk(q);else if(/out_.*\.json$/.test(f))a.push(...JSON.parse(fs.readFileSync(q)));}};walk('res');const w=a.filter(x=>x==1).length,d=a.filter(x=>x==.5).length;console.log('RESULT',JSON.stringify(require('./tools/lab/match.json')),'games',a.length,'W',w,'D',d,'L',a.length-w-d,'score',(100*(w+d/2)/a.length).toFixed(1)+'%')" | tee -a $GITHUB_STEP_SUMMARY
