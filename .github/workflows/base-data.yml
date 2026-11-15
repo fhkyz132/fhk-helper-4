@@ -1,0 +1,22 @@
+name: base-data
+on:
+  push:
+    branches: [engine-lab]
+    paths: [tools/lab/base.json]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: lichess eval slice
+        run: |
+          L=$(jq -r .lines tools/lab/base.json)
+          (curl -sL --retry 5 https://database.lichess.org/lichess_db_eval.jsonl.zst | zstd -dc 2>/dev/null || true) | head -n $L | python3 tools/lab/evconv.py $L | gzip -4 > base.txt.gz
+          zcat base.txt.gz | wc -l; ls -la base.txt.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: base-data
+          path: base.txt.gz
+          retention-days: 90
+          compression-level: 0

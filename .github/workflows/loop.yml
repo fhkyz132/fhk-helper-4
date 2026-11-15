@@ -1,0 +1,135 @@
+name: fhk-loop
+on:
+  schedule:
+    - cron: "5 */3 * * *"
+  push:
+    branches: [engine-lab]
+    paths: [tools/lab/loop_kick.txt]
+concurrency:
+  group: fhk-loop
+  cancel-in-progress: false
+permissions:
+  contents: write
+  actions: read
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: engine-lab
+      - name: self-play
+        run: |
+          cd tools/lab; C=loop.json
+          gcc -O3 -march=native $(jq -r .flags $C) -o gen/gen gen/gen.c
+          for p in $(seq 0 $(( $(nproc) - 1 ))); do
+            OPEN=gen/open.txt timeout $(jq -r .gen_seconds $C) ./gen/gen $(jq -r .nodes $C) $(( (${{ github.run_id }} % 100000) * 100 + ${{ matrix.shard }} * 10 + p )) 100000000 nets/current.bin > sp_$p.txt &
+          done
+          wait || true
+          cat sp_*.txt | gzip -4 > sp_${{ matrix.shard }}.txt.gz; zcat sp_${{ matrix.shard }}.txt.gz | wc -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sp-${{ matrix.shard }}
+          path: tools/lab/sp_*.txt.gz
+          retention-days: 7
+          compression-level: 0
+  train:
+    needs: gen
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: engine-lab
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sp-*
+          path: data/new
+          merge-multiple: true
+      - name: older data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          B=$(jq -r .base_run tools/lab/loop.json); P=$(jq -r .last_run tools/lab/loop_state.json)
+          mkdir -p data/base data/prev
+          gh run download $B -R ${{ github.repository }} -n base-data -D data/base || echo "no base"
+          if [ "$P" != "0" ]; then for s in 0 1 2 3 4 5 6 7 8 9; do gh run download $P -R ${{ github.repository }} -n sp-$s -D data/prev || true; done; fi
+          ls -la data/*
+      - name: train
+        run: |
+          C=tools/lab/loop.json
+          gcc -O3 -march=native -fopenmp -DH=512 -o train2 tools/lab/train/train2.c -lm
+          zcat data/new/*.gz > all_new.txt; ls data/prev/*.gz >/dev/null 2>&1 && zcat data/prev/*.gz > all_prev.txt || touch all_prev.txt
+          ls data/base/*.gz >/dev/null 2>&1 && zcat data/base/*.gz > all_base.txt || touch all_base.txt
+          rm -rf data; wc -l all_*.txt; df -h .
+          CAPN=$(( $(cat all_*.txt | wc -l) + 1000 )) INIT=tools/lab/nets/current.bin LR0=$(jq -r .lr $C) ./train2 new.bin $(jq -r .epochs $C) $(jq -r .lambda $C) all_new.txt all_prev.txt all_base.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: new-net
+          path: new.bin
+          retention-days: 30
+  gate:
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: engine-lab
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-net
+          path: tools/lab
+      - name: match
+        run: |
+          cd tools/lab; C=loop.json
+          for p in 0 1 2 3; do node wsp.js x2_512.wasm:new.bin x2_512.wasm:nets/current.bin $(jq -r .gate_pairs $C) $(jq -r .gate_ms $C) $(( ${{ matrix.shard }}*4 + p )) 40 g_${{ matrix.shard }}_$p.json > /dev/null 2>&1 & done; wait
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ matrix.shard }}
+          path: tools/lab/g_*.json
+          retention-days: 7
+  promote:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: engine-lab
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gate-*
+          path: g
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-net
+          path: .
+      - name: decide
+        run: |
+          R=$(node -e "const fs=require('fs');let a=[];for(const f of fs.readdirSync('g'))a.push(...JSON.parse(fs.readFileSync('g/'+f)));const s=a.reduce((x,y)=>x+y,0)/a.length;console.log(a.length+' '+(100*s).toFixed(1)+' '+Math.round(-400*Math.log10(1/s-1)))")
+          set -- $R; N=$1; S=$2; E=$3; echo "games $N score $S elo $E"
+          git config user.name "fhk-loop"; git config user.email "fhk-loop@users.noreply.github.com"
+          for i in 1 2 3 4 5; do
+            git pull -q --rebase origin engine-lab || true
+            IT=$(jq -r .iter tools/lab/loop_state.json); TH=$(jq -r .promote_elo tools/lab/loop.json)
+            if [ "$E" -ge "$TH" ]; then IT=$((IT+1)); cp new.bin tools/lab/nets/current.bin; cp new.bin tools/lab/nets/iter_$IT.bin; P=promoted; else P=rejected; fi
+            jq ".iter=$IT | .last_run=${{ github.run_id }}" tools/lab/loop_state.json > s.tmp && mv s.tmp tools/lab/loop_state.json
+            echo "$(date -u +%FT%TZ) run ${{ github.run_id }} games $N score $S elo $E $P iter $IT" >> tools/lab/loop_log.txt
+            git add tools/lab/loop_state.json tools/lab/loop_log.txt tools/lab/nets && git commit -qm "fhk-loop: $P (elo $E) iter $IT" && git push -q origin HEAD:engine-lab && break
+            git reset -q --hard origin/engine-lab; sleep 5
+          done
+          tail -3 tools/lab/loop_log.txt | tee -a $GITHUB_STEP_SUMMARY
