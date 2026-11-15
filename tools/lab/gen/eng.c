@@ -42,8 +42,21 @@ static i32 ZL[16][120], ZH[16][120], ZSL, ZSH, ZCL[16], ZCH[16], ZEL[120], ZEH[1
 static u8 CMASK[120];
 typedef unsigned long long u64;
 static u8 SQ64[120], SQ120[64]; static u64 occ[2];
-#define OSET(s, c) (occ[(c) >> 3] |= 1ULL << SQ64[s])
-#define OCLR(s, c) (occ[(c) >> 3] &= ~(1ULL << SQ64[s]))
+#define OSET(s, c) (occ[(c) >> 3] |= 1ULL << SQ64[s], pbb[c] |= 1ULL << SQ64[s])
+#define OCLR(s, c) (occ[(c) >> 3] &= ~(1ULL << SQ64[s]), pbb[c] &= ~(1ULL << SQ64[s]))
+static u64 pbb[16], KNA[64], KGA[64], PAA[2][64], RAY[8][64];
+static const int RDR[8] = {-1, 1, 0, 0, -1, -1, 1, 1}, RDF[8] = {0, 0, 1, -1, 1, -1, 1, -1}; // N S E W NE NW SE SW (r=0 is rank 8)
+static const int RPOS[8] = {0, 1, 1, 0, 0, 0, 1, 1}; // direction increases the 64-index
+static void bbInit(void) {
+  for (int sq = 0; sq < 64; sq++) { int r = sq >> 3, f = sq & 7; KNA[sq] = KGA[sq] = 0; PAA[0][sq] = PAA[1][sq] = 0;
+    static const int nr[8] = {-2, -2, -1, -1, 1, 1, 2, 2}, nf[8] = {-1, 1, -2, 2, -2, 2, -1, 1};
+    for (int i = 0; i < 8; i++) { int a = r + nr[i], b = f + nf[i]; if (a >= 0 && a < 8 && b >= 0 && b < 8) KNA[sq] |= 1ULL << (a * 8 + b); }
+    for (int dr = -1; dr <= 1; dr++) for (int df = -1; df <= 1; df++) { if (!dr && !df) continue; int a = r + dr, b = f + df; if (a >= 0 && a < 8 && b >= 0 && b < 8) KGA[sq] |= 1ULL << (a * 8 + b); }
+    for (int df = -1; df <= 1; df += 2) { int b = f + df; if (b < 0 || b > 7) continue; if (r > 0) PAA[0][sq] |= 1ULL << ((r - 1) * 8 + b); if (r < 7) PAA[1][sq] |= 1ULL << ((r + 1) * 8 + b); }
+    for (int d = 0; d < 8; d++) { u64 m = 0; int a = r + RDR[d], b = f + RDF[d]; while (a >= 0 && a < 8 && b >= 0 && b < 8) { m |= 1ULL << (a * 8 + b); a += RDR[d]; b += RDF[d]; } RAY[d][sq] = m; } } }
+static inline u64 rayA(int d, int sq, u64 o) { u64 a = RAY[d][sq], b = a & o; if (b) { int k = RPOS[d] ? __builtin_ctzll(b) : 63 - __builtin_clzll(b); a ^= RAY[d][k]; } return a; }
+static inline u64 bishA(int sq, u64 o) { return rayA(4, sq, o) | rayA(5, sq, o) | rayA(6, sq, o) | rayA(7, sq, o); }
+static inline u64 rookA(int sq, u64 o) { return rayA(0, sq, o) | rayA(1, sq, o) | rayA(2, sq, o) | rayA(3, sq, o); }
 #define FOR_OCC(bb, s) for (u64 _b = (bb); _b; _b &= _b - 1) for (i32 s = SQ120[__builtin_ctzll(_b)], _o = 1; _o; _o = 0)
 #define mFrom(m) ((m) & 127)
 #define mTo(m) (((m) >> 7) & 127)
@@ -69,16 +82,22 @@ void init(void) {
   CMASK[95] = 15 & ~3; CMASK[98] = 15 & ~1; CMASK[91] = 15 & ~2; CMASK[25] = 15 & ~12; CMASK[28] = 15 & ~4; CMASK[21] = 15 & ~8;
   for (int i = 1; i <= 6; i++) { PASSED_MG[i] = EP[4 + i - 1]; PASSED_EG[i] = EP[10 + i - 1]; }
   for (int t = 2; t <= 5; t++) { MOB_MG[t] = EP[18 + t - 2]; MOB_EG[t] = EP[22 + t - 2]; KS_W[t] = EP[26 + t - 2]; }
+  bbInit();
   int dd[9] = {-11, -10, -9, -1, 0, 1, 9, 10, 11}; for (int i = 0; i < 9; i++) KZONE[dd[i] + 120] = 1;
 }
 extern i32 useNN; static i32 nnRec; static void nnFull(i32 L);
 void recompute(void) { // after JS filled B, side, castle, ep, half
-  i32 l = 0, h = 0, m = 0, e = 0, ph = 0; kingSq[0] = kingSq[1] = 0; occ[0] = occ[1] = 0;
+  i32 l = 0, h = 0, m = 0, e = 0, ph = 0; kingSq[0] = kingSq[1] = 0; occ[0] = occ[1] = 0; for (int i = 0; i < 16; i++) pbb[i] = 0;
   for (int s = 21; s < 99; s++) { i32 p = B[s]; if (p == 0 || p == OFF) continue; l ^= ZL[p][s]; h ^= ZH[p][s]; m += PST_MG[p][s]; e += PST_EG[p][s]; ph += PHASEW[p & 7]; OSET(s, p); if ((p & 7) == KING) kingSq[p >> 3] = s; }
   if (side == BLACK) { l ^= ZSL; h ^= ZSH; } l ^= ZCL[castle]; h ^= ZCH[castle]; if (ep) { l ^= ZEL[ep]; h ^= ZEH[ep]; }
   hl = l; hh = h; mg = m; eg = e; phase = ph; sp = 0; nnRec = useNN; if (useNN) nnFull(0);
 }
 i32 get_hl(void) { return hl; } i32 get_hh(void) { return hh; }
+#ifdef BBATT
+static int attacked(i32 s, i32 by) { i32 sq = SQ64[s], c = by >> 3; u64 o = occ[0] | occ[1];
+  if ((PAA[c ^ 1][sq] & pbb[PAWN | by]) || (KNA[sq] & pbb[KNIGHT | by]) || (KGA[sq] & pbb[KING | by])) return 1;
+  u64 q = pbb[QUEEN | by]; if (bishA(sq, o) & (pbb[BISHOP | by] | q)) return 1; if (rookA(sq, o) & (pbb[ROOK | by] | q)) return 1; return 0; }
+#else
 static int attacked(i32 s, i32 by) {
   if (by == WHITE) { if (B[s + 9] == PAWN || B[s + 11] == PAWN) return 1; } else { if (B[s - 9] == (PAWN | 8) || B[s - 11] == (PAWN | 8)) return 1; }
   i32 n = KNIGHT | by, k = KING | by, bq = BISHOP | by, rq = ROOK | by, q = QUEEN | by;
@@ -86,7 +105,70 @@ static int attacked(i32 s, i32 by) {
   for (int i = 0; i < 4; i++) { i32 d = B_OFF[i], t = s + d, p; while ((p = B[t]) == 0) t += d; if (p == bq || p == q) return 1; d = R_OFF[i]; t = s + d; while ((p = B[t]) == 0) t += d; if (p == rq || p == q) return 1; }
   return 0;
 }
+#endif
 static int inCheck(void) { return attacked(kingSq[side >> 3], side ^ 8); }
+#ifdef GENBB
+#ifdef GENCHECK
+#define gen genBBi
+#endif
+static i32 gen(i32 *out, i32 n, int capsOnly) {
+  i32 us = side, them = us ^ 8, c = us >> 3; u64 own = occ[c], opp = occ[c ^ 1], all = own | opp;
+  i32 fwd = us == WHITE ? -8 : 8, startR = us == WHITE ? 6 : 1, promoR = us == WHITE ? 0 : 7;
+  for (u64 b = pbb[PAWN | us]; b; b &= b - 1) { i32 sq = __builtin_ctzll(b), s = SQ120[sq], one = sq + fwd; int promo = (one >> 3) == promoR;
+    if (!(all >> one & 1)) { i32 t1 = SQ120[one]; if (promo) { for (int pr = QUEEN; pr >= KNIGHT; pr--) out[n++] = mk(s, t1, pr, 0); }
+      else if (!capsOnly) { out[n++] = mk(s, t1, 0, 0); if ((sq >> 3) == startR && !(all >> (one + fwd) & 1)) out[n++] = mk(s, SQ120[one + fwd], 0, F_DOUBLE); } }
+    for (u64 a = PAA[c][sq] & opp; a; a &= a - 1) { i32 t = SQ120[__builtin_ctzll(a)]; if (promo) { for (int pr = QUEEN; pr >= KNIGHT; pr--) out[n++] = mk(s, t, pr, F_CAP); } else out[n++] = mk(s, t, 0, F_CAP); }
+    if (ep && (PAA[c][sq] >> SQ64[ep] & 1)) out[n++] = mk(s, ep, 0, F_CAP | F_EP); }
+  u64 tgt = capsOnly ? opp : ~own;
+  for (int t = KNIGHT; t <= KING; t++) for (u64 b = pbb[t | us]; b; b &= b - 1) { i32 sq = __builtin_ctzll(b), s = SQ120[sq]; u64 a;
+    if (t == KNIGHT) a = KNA[sq]; else if (t == BISHOP) a = bishA(sq, all); else if (t == ROOK) a = rookA(sq, all); else if (t == QUEEN) a = bishA(sq, all) | rookA(sq, all); else a = KGA[sq];
+    for (a &= tgt; a; a &= a - 1) { i32 x = __builtin_ctzll(a); out[n++] = mk(s, SQ120[x], 0, (opp >> x & 1) ? F_CAP : 0); }
+    if (t == KING && !capsOnly) {
+      if (us == WHITE && s == 95) {
+        if ((castle & 1) && B[96] == 0 && B[97] == 0 && B[98] == ROOK && !attacked(95, BLACK) && !attacked(96, BLACK) && !attacked(97, BLACK)) out[n++] = mk(95, 97, 0, F_CASTLE);
+        if ((castle & 2) && B[94] == 0 && B[93] == 0 && B[92] == 0 && B[91] == ROOK && !attacked(95, BLACK) && !attacked(94, BLACK) && !attacked(93, BLACK)) out[n++] = mk(95, 93, 0, F_CASTLE);
+      } else if (us == BLACK && s == 25) {
+        if ((castle & 4) && B[26] == 0 && B[27] == 0 && B[28] == (ROOK | 8) && !attacked(25, WHITE) && !attacked(26, WHITE) && !attacked(27, WHITE)) out[n++] = mk(25, 27, 0, F_CASTLE);
+        if ((castle & 8) && B[24] == 0 && B[23] == 0 && B[22] == 0 && B[21] == (ROOK | 8) && !attacked(25, WHITE) && !attacked(24, WHITE) && !attacked(23, WHITE)) out[n++] = mk(25, 23, 0, F_CASTLE);
+      } } }
+  (void)them; return n;
+}
+#ifdef GENCHECK
+#undef gen
+static i32 genMB(i32 *out, i32 n, int capsOnly);
+static int cmpi(const void *a, const void *b) { return *(const i32 *)a - *(const i32 *)b; }
+static long gcBad = 0, gcN = 0;
+static i32 gen(i32 *out, i32 n, int capsOnly) { static i32 x[512], y[512]; i32 k = genBBi(out, n, capsOnly), k2 = genMB(x, 0, capsOnly);
+  gcN++; if (k - n != k2) gcBad++; else { for (int i = 0; i < k2; i++) y[i] = out[n + i]; qsort(x, k2, 4, cmpi); qsort(y, k2, 4, cmpi); for (int i = 0; i < k2; i++) if (x[i] != y[i]) { gcBad++; break; } }
+  return k; }
+static i32 genMB(i32 *out, i32 n, int capsOnly) {
+  i32 us = side, them = us ^ 8, fwd = us == WHITE ? -10 : 10, startRow = us == WHITE ? 6 : 1, promoRow = us == WHITE ? 0 : 7;
+  FOR_OCC(occ[us >> 3], s) {
+    i32 p = B[s]; i32 t = p & 7;
+    if (t == PAWN) { i32 one = s + fwd; int promo = rowOf(one) == promoRow;
+      if (B[one] == 0) { if (promo) { for (int pr = QUEEN; pr >= KNIGHT; pr--) out[n++] = mk(s, one, pr, 0); } else if (!capsOnly) { out[n++] = mk(s, one, 0, 0); if (rowOf(s) == startRow && B[one + fwd] == 0) out[n++] = mk(s, one + fwd, 0, F_DOUBLE); } }
+      for (int k = 0; k < 2; k++) { i32 to = s + fwd - 1 + 2 * k, q = B[to];
+        if (q != 0 && q != OFF && (q & 8) == them) { if (promo) { for (int pr = QUEEN; pr >= KNIGHT; pr--) out[n++] = mk(s, to, pr, F_CAP); } else out[n++] = mk(s, to, 0, F_CAP); }
+        else if (to == ep && ep) out[n++] = mk(s, to, 0, F_CAP | F_EP); }
+      continue; }
+    if (t == KNIGHT || t == KING) { const i32 *offs = t == KNIGHT ? N_OFF : K_OFF;
+      for (int i = 0; i < 8; i++) { i32 to = s + offs[i], q = B[to]; if (q == 0) { if (!capsOnly) out[n++] = mk(s, to, 0, 0); } else if (q != OFF && (q & 8) == them) out[n++] = mk(s, to, 0, F_CAP); }
+      if (t == KING && !capsOnly) {
+        if (us == WHITE && s == 95) {
+          if ((castle & 1) && B[96] == 0 && B[97] == 0 && B[98] == ROOK && !attacked(95, BLACK) && !attacked(96, BLACK) && !attacked(97, BLACK)) out[n++] = mk(95, 97, 0, F_CASTLE);
+          if ((castle & 2) && B[94] == 0 && B[93] == 0 && B[92] == 0 && B[91] == ROOK && !attacked(95, BLACK) && !attacked(94, BLACK) && !attacked(93, BLACK)) out[n++] = mk(95, 93, 0, F_CASTLE);
+        } else if (us == BLACK && s == 25) {
+          if ((castle & 4) && B[26] == 0 && B[27] == 0 && B[28] == (ROOK | 8) && !attacked(25, WHITE) && !attacked(26, WHITE) && !attacked(27, WHITE)) out[n++] = mk(25, 27, 0, F_CASTLE);
+          if ((castle & 8) && B[24] == 0 && B[23] == 0 && B[22] == 0 && B[21] == (ROOK | 8) && !attacked(25, WHITE) && !attacked(24, WHITE) && !attacked(23, WHITE)) out[n++] = mk(25, 23, 0, F_CASTLE);
+        } }
+      continue; }
+    const i32 *dirs = t == BISHOP ? B_OFF : t == ROOK ? R_OFF : K_OFF; int nd = t == QUEEN ? 8 : 4;
+    for (int i = 0; i < nd; i++) { i32 d = dirs[i], to = s + d, q; while ((q = B[to]) == 0) { if (!capsOnly) out[n++] = mk(s, to, 0, 0); to += d; } if (q != OFF && (q & 8) == them) out[n++] = mk(s, to, 0, F_CAP); }
+  }
+  return n;
+}
+#endif
+#else
 static i32 gen(i32 *out, i32 n, int capsOnly) {
   i32 us = side, them = us ^ 8, fwd = us == WHITE ? -10 : 10, startRow = us == WHITE ? 6 : 1, promoRow = us == WHITE ? 0 : 7;
   FOR_OCC(occ[us >> 3], s) {
@@ -113,6 +195,7 @@ static i32 gen(i32 *out, i32 n, int capsOnly) {
   }
   return n;
 }
+#endif
 // ---- FHK-Net (own neural eval): 768 -> NNH x2 -> 1, lazy incremental accumulators ----
 #ifndef NNH
 #define NNH 256
@@ -191,11 +274,11 @@ static void unmake(void) {
   sp -= 10; i32 *st = &stk[sp]; i32 cap = st[9]; phase = st[8]; eg = st[7]; mg = st[6]; hh = st[5]; hl = st[4]; half = st[3]; ep = st[2]; castle = st[1]; i32 m = st[0];
   nhist--; side ^= 8;
   i32 from = mFrom(m), to = mTo(m), fl = mFlag(m), us = side;
-  i32 p = B[to]; if (mPromo(m)) p = PAWN | us;
-  B[from] = p; B[to] = 0; OSET(from, us); OCLR(to, us);
+  i32 pt = B[to], p = pt; if (mPromo(m)) p = PAWN | us;
+  B[from] = p; B[to] = 0; OCLR(to, pt); OSET(from, p);
   if ((p & 7) == KING) kingSq[us >> 3] = from;
   if (fl & F_EP) { i32 cs = to + (us == WHITE ? 10 : -10); B[cs] = cap; OSET(cs, cap); } else if (cap) { B[to] = cap; OSET(to, cap); }
-  if (fl & F_CASTLE) { i32 rf, rt; if (to == 97) { rf = 98; rt = 96; } else if (to == 93) { rf = 91; rt = 94; } else if (to == 27) { rf = 28; rt = 26; } else { rf = 21; rt = 24; } B[rf] = B[rt]; B[rt] = 0; OSET(rf, us); OCLR(rt, us); }
+  if (fl & F_CASTLE) { i32 rf, rt; if (to == 97) { rf = 98; rt = 96; } else if (to == 93) { rf = 91; rt = 94; } else if (to == 27) { rf = 28; rt = 26; } else { rf = 21; rt = 24; } i32 rk = B[rt]; B[rf] = rk; B[rt] = 0; OCLR(rt, rk); OSET(rf, rk); }
 }
 static void makeNull(void) { i32 *st = &stk[sp]; st[0] = 0; st[1] = castle; st[2] = ep; st[3] = half; st[4] = hl; st[5] = hh; st[6] = mg; st[7] = eg; st[8] = phase; st[9] = 0; sp += 10; { i32 L = sp / 10; nnOk[L] = 0; nnNA[L] = 0; nnNS[L] = 0; }
   hist[nhist++] = hl; if (ep) { hl ^= ZEL[ep]; hh ^= ZEH[ep]; ep = 0; } side ^= 8; hl ^= ZSL; hh ^= ZSH; half++; }
@@ -214,6 +297,27 @@ static i32 leastAttacker(i32 s, i32 sd) {
   for (int i = 0; i < 8; i++) if (B[s + K_OFF[i]] == (KING | sd)) return s + K_OFF[i];
   return 0;
 }
+#ifdef SEEBB
+static i32 see(i32 m) {
+  i32 from = mFrom(m), to = mTo(m); if (mFlag(m) & F_CASTLE) return 0;
+  i32 gain[40]; i32 d = 0, sd = side; i32 tq = SQ64[to];
+  i32 captured = (mFlag(m) & F_EP) ? PAWN : (B[to] & 7); gain[0] = SEEVAL[captured];
+  i32 attackerVal = mPromo(m) ? SEEVAL[mPromo(m)] : SEEVAL[B[from] & 7]; if (mPromo(m)) gain[0] += SEEVAL[mPromo(m)] - 100;
+  u64 o = (occ[0] | occ[1]) & ~(1ULL << SQ64[from]);
+  if (mFlag(m) & F_EP) o &= ~(1ULL << SQ64[to + (sd == WHITE ? 10 : -10)]);
+  u64 diag = pbb[BISHOP] | pbb[BISHOP | 8] | pbb[QUEEN] | pbb[QUEEN | 8], orth = pbb[ROOK] | pbb[ROOK | 8] | pbb[QUEEN] | pbb[QUEEN | 8];
+  u64 att = (PAA[1][tq] & pbb[PAWN]) | (PAA[0][tq] & pbb[PAWN | 8]) | (KNA[tq] & (pbb[KNIGHT] | pbb[KNIGHT | 8])) | (KGA[tq] & (pbb[KING] | pbb[KING | 8])) | (bishA(tq, o) & diag) | (rookA(tq, o) & orth);
+  sd ^= 8;
+  while (1) { att &= o; u64 mine = att & occ[sd >> 3]; if (!mine) break; i32 t, a = -1;
+    for (t = PAWN; t <= KING; t++) { u64 bb = mine & pbb[t | sd]; if (bb) { a = __builtin_ctzll(bb); break; } }
+    if (a < 0) break;
+    d++; gain[d] = attackerVal - gain[d - 1]; if (imax(-gain[d - 1], gain[d]) < 0) break; attackerVal = SEEVAL[t];
+    o &= ~(1ULL << a); if (t == PAWN || t == BISHOP || t == QUEEN) att |= bishA(tq, o) & diag; if (t == ROOK || t == QUEEN) att |= rookA(tq, o) & orth;
+    sd ^= 8; if (d >= 30) break; }
+  while (d > 0) { gain[d - 1] = -imax(-gain[d - 1], gain[d]); d--; }
+  return gain[0];
+}
+#else
 static i32 see(i32 m) {
   i32 from = mFrom(m), to = mTo(m); if (mFlag(m) & F_CASTLE) return 0;
   i32 gain[40], remS[40], remP[40]; int nr = 0; i32 d = 0, sd = side;
@@ -227,6 +331,7 @@ static i32 see(i32 m) {
   for (int i = nr - 1; i >= 0; i--) B[remS[i]] = remP[i]; B[to] = saveTo;
   return gain[0];
 }
+#endif
 // ---- eval ----
 static i32 kdist(i32 a, i32 c) { return imax(iabs(fileOf(a) - fileOf(c)), iabs(rowOf(a) - rowOf(c))); }
 #define ECB 16
