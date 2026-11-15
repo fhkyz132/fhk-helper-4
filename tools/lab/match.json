@@ -1,1 +1,1 @@
-{"name":"n13_vs_n12","type":"sp","A":"x2_512.wasm:nets/n13.bin","B":"x2_512.wasm:nets/n12.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":15}
+{"name":"bb_n13_L20_2s","wasm":"bb512.wasm","net":"nets/n13.bin","level":20,"ms":2000,"shards":20,"pairsPerProc":2,"procs":3,"run":16}
