@@ -1,1 +1,1 @@
-{"name":"sp_n9_20k","net":"nets/n9.bin","nodes":20000,"seconds":19500,"shards":10,"flags":"-DPARTIAL -DHLMR=20000","batch":1}
+{"name":"sp_n12_20k","net":"nets/n12.bin","nodes":20000,"seconds":19500,"shards":10,"flags":"-DNNH=512 -DPARTIAL -DHLMR=5000 -DSE=8 -DIMPR1 -DHNEG=5000 -DCMOVE","batch":2}
