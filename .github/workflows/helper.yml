@@ -1,0 +1,57 @@
+name: fhk-helper
+# Runs only in a supporter's fork: makes FHK self-play data with the newest net and publishes it on the fork's sp-data branch.
+on:
+  schedule:
+    - cron: "30 */6 * * *"
+  workflow_dispatch:
+concurrency:
+  group: fhk-helper
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  gen:
+    if: github.repository != 'khanfarazhusain/minds-eye-chess'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: khanfarazhusain/minds-eye-chess
+          ref: engine-lab
+      - name: self-play
+        run: |
+          cd tools/lab; C=loop.json
+          gcc -O3 -march=native $(jq -r .flags $C) -o gen/gen gen/gen.c
+          for p in $(seq 0 $(( $(nproc) - 1 ))); do
+            OPEN=gen/open.txt timeout 16200 ./gen/gen $(jq -r .nodes $C) $(( (${{ github.run_id }} % 100000) * 100 + 50 + ${{ matrix.shard }} * 2 + p )) 100000000 nets/current.bin > hp_$p.txt &
+          done
+          wait || true
+          cat hp_*.txt | gzip -4 > hp_${{ matrix.shard }}.txt.gz; zcat hp_${{ matrix.shard }}.txt.gz | wc -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hp-${{ matrix.shard }}
+          path: tools/lab/hp_*.txt.gz
+          retention-days: 2
+          compression-level: 0
+  publish:
+    needs: gen
+    if: always() && github.repository != 'khanfarazhusain/minds-eye-chess'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hp-*
+          path: hp
+          merge-multiple: true
+      - name: push data branch
+        run: |
+          mkdir out; zcat hp/*.gz | gzip -4 | split -b 90m -d - out/part_
+          echo "run ${{ github.run_id }} $(date -u +%FT%TZ) lines $(zcat hp/*.gz | wc -l)" > out/STAMP.txt
+          cd out; git init -q -b sp-data; git config user.name fhk-helper; git config user.email fhk-helper@users.noreply.github.com
+          git add -A; git commit -qm "self-play data ${{ github.run_id }}"
+          git push -f -q https://x-access-token:${{ github.token }}@github.com/${{ github.repository }} sp-data
