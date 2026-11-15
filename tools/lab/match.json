@@ -1,1 +1,1 @@
-{"name":"bb_vs_x2","type":"sp","A":"bb512.wasm:nets/n12.bin","B":"x2_512.wasm:nets/n12.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":14}
+{"name":"n13_vs_n12","type":"sp","A":"x2_512.wasm:nets/n13.bin","B":"x2_512.wasm:nets/n12.bin","pairs":376,"ms":200,"shards":10,"procs":4,"run":15}
